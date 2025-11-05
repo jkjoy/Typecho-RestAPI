@@ -3,7 +3,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
 
 /**
  * WordPress-compatible REST API for Typecho
- * @version 1.0.0
+ * @version 1.0.1
  * @author jkjoy
  * @link https://www.imsun.org
  * @package RestAPI
@@ -33,6 +33,14 @@ class RestAPI_Plugin implements Typecho_Plugin_Interface
         Helper::addRoute('restapi_post_item_index', '/index.php/wp-json/wp/v2/posts/[cid]', 'RestAPI_Action', 'post');
         Helper::addRoute('restapi_post_item_slash', '/wp-json/wp/v2/posts/[cid]/', 'RestAPI_Action', 'post');
         Helper::addRoute('restapi_post_item_slash_index', '/index.php/wp-json/wp/v2/posts/[cid]/', 'RestAPI_Action', 'post');
+        // Posts by tag slug
+        Helper::addRoute('restapi_posts_by_tag', '/wp-json/wp/v2/posts/tag/[slug]', 'RestAPI_Action', 'posts_by_tag');
+        Helper::addRoute('restapi_posts_by_tag_index', '/index.php/wp-json/wp/v2/posts/tag/[slug]', 'RestAPI_Action', 'posts_by_tag');
+        Helper::addRoute('restapi_posts_by_tag_slash', '/wp-json/wp/v2/posts/tag/[slug]/', 'RestAPI_Action', 'posts_by_tag');
+        Helper::addRoute('restapi_posts_by_tag_slash_index', '/index.php/wp-json/wp/v2/posts/tag/[slug]/', 'RestAPI_Action', 'posts_by_tag');
+        // Posts by slug
+        Helper::addRoute('restapi_post_by_slug', '/wp-json/wp/v2/posts/slug/[slug]', 'RestAPI_Action', 'post_by_slug');
+        Helper::addRoute('restapi_post_by_slug_index', '/index.php/wp-json/wp/v2/posts/slug/[slug]', 'RestAPI_Action', 'post_by_slug');
 
         // Pages
         Helper::addRoute('restapi_pages', '/wp-json/wp/v2/pages', 'RestAPI_Action', 'pages');
@@ -43,6 +51,9 @@ class RestAPI_Plugin implements Typecho_Plugin_Interface
         Helper::addRoute('restapi_page_item_index', '/index.php/wp-json/wp/v2/pages/[cid]', 'RestAPI_Action', 'page');
         Helper::addRoute('restapi_page_item_slash', '/wp-json/wp/v2/pages/[cid]/', 'RestAPI_Action', 'page');
         Helper::addRoute('restapi_page_item_slash_index', '/index.php/wp-json/wp/v2/pages/[cid]/', 'RestAPI_Action', 'page');
+        // Pages by slug
+        Helper::addRoute('restapi_page_by_slug', '/wp-json/wp/v2/pages/slug/[slug]', 'RestAPI_Action', 'page_by_slug');
+        Helper::addRoute('restapi_page_by_slug_index', '/index.php/wp-json/wp/v2/pages/slug/[slug]', 'RestAPI_Action', 'page_by_slug');
 
         // Categories
         Helper::addRoute('restapi_categories', '/wp-json/wp/v2/categories', 'RestAPI_Action', 'categories');

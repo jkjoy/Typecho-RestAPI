@@ -70,7 +70,10 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
             'name' => 'wp/v2',
             'routes' => [
                 '/wp/v2/posts' => ['methods' => ['GET']],
+                '/wp/v2/posts/slug/(?P<slug>[a-zA-Z0-9\-_]+)' => ['methods' => ['GET']],
+                '/wp/v2/posts/tag/(?P<slug>[a-zA-Z0-9\-_]+)' => ['methods' => ['GET']],
                 '/wp/v2/pages' => ['methods' => ['GET']],
+                '/wp/v2/pages/slug/(?P<slug>[a-zA-Z0-9\-_]+)' => ['methods' => ['GET']],
                 '/wp/v2/categories' => ['methods' => ['GET']],
                 '/wp/v2/tags' => ['methods' => ['GET']],
                 '/wp/v2/settings' => ['methods' => ['GET']],
@@ -468,74 +471,130 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
     private function list_contents($type)
     {
         list($page, $per, $offset) = $this->get_pagination();
-        $select = $this->db->select()->from('table.contents')
-            ->where('type = ?', $type)
-            ->where('status = ?', 'publish')
-            ->where('created <= ?', time())
-            ->order('created', Typecho_Db::SORT_DESC)
+        $select = $this->db->select('table.contents.*')->from('table.contents')
+            ->where('table.contents.type = ?', $type)
+            ->where('table.contents.status = ?', 'publish')
+            ->where('table.contents.created <= ?', time())
+            ->order('table.contents.created', Typecho_Db::SORT_DESC)
             ->limit($per, $offset);
         // search
         $search = trim((string)$this->request->get('search', ''));
         if ($search !== '') {
             $kw = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
-            $select->where("(title LIKE ? OR text LIKE ?)", $kw, $kw);
+            $select->where("(table.contents.title LIKE ? OR table.contents.text LIKE ?)", $kw, $kw);
         }
         // filter by slug (WordPress often uses ?slug=foo)
         $slug = trim((string)$this->request->get('slug', ''));
         if ($slug !== '') {
-            $select->where('slug = ?', $slug);
+            $select->where('table.contents.slug = ?', $slug);
         }
+        // filter by author id (?author=1)
+        $authorId = (int)$this->request->get('author', 0);
+        if ($authorId > 0) {
+            $select->where('table.contents.authorId = ?', $authorId);
+        }
+        // include / exclude by content id
+        $includeParam = trim((string)$this->request->get('include', ''));
+        if ($includeParam !== '') {
+            $includeIds = array_filter(array_map('intval', explode(',', $includeParam)));
+            if (!empty($includeIds)) {
+                $ph = implode(',', array_fill(0, count($includeIds), '?'));
+                $select->where('table.contents.cid IN (' . $ph . ')', ...$includeIds);
+            }
+        }
+        $excludeParam = trim((string)$this->request->get('exclude', ''));
+        if ($excludeParam !== '') {
+            $excludeIds = array_filter(array_map('intval', explode(',', $excludeParam)));
+            if (!empty($excludeIds)) {
+                $ph = implode(',', array_fill(0, count($excludeIds), '?'));
+                $select->where('table.contents.cid NOT IN (' . $ph . ')', ...$excludeIds);
+            }
+        }
+
+        // read tag slug for later taxonomy join
+        $tagSlug = trim((string)$this->request->get('tag', ''));
 
         // taxonomy filters (ids separated by comma)
         $catParam = trim((string)$this->request->get('categories', ''));
         $tagParam = trim((string)$this->request->get('tags', ''));
-        if ($catParam !== '' || $tagParam !== '') {
+        $catIds = $catParam !== '' ? array_filter(array_map('intval', explode(',', $catParam))) : [];
+        $tagIds = $tagParam !== '' ? array_filter(array_map('intval', explode(',', $tagParam))) : [];
+        $needsTermJoin = (!empty($catIds) || !empty($tagIds) || $tagSlug !== '');
+        if ($needsTermJoin) {
             $select->join('table.relationships', 'table.relationships.cid = table.contents.cid')
                 ->join('table.metas', 'table.metas.mid = table.relationships.mid');
-            if ($catParam !== '') {
-                $ids = array_filter(array_map('intval', explode(',', $catParam)));
-                if ($ids) {
-                    $select->where('table.metas.type = ?', 'category')
-                        ->where('table.metas.mid IN ?', $ids);
+
+            $parts = [];
+            $binds = [];
+            if (!empty($catIds)) {
+                $in = implode(',', array_map('intval', $catIds));
+                $parts[] = "(table.metas.type = 'category' AND table.metas.mid IN ($in))";
+            }
+            if (!empty($tagIds)) {
+                $in = implode(',', array_map('intval', $tagIds));
+                $parts[] = "(table.metas.type = 'tag' AND table.metas.mid IN ($in))";
+            }
+            if ($tagSlug !== '') {
+                $parts[] = "(table.metas.type = 'tag' AND table.metas.slug = ?)";
+                $binds[] = $tagSlug;
+            }
+            if (!empty($parts)) {
+                $expr = '(' . implode(' OR ', $parts) . ')';
+                if (!empty($binds)) {
+                    $select->where($expr, ...$binds);
+                } else {
+                    $select->where($expr);
                 }
             }
-            if ($tagParam !== '') {
-                $ids = array_filter(array_map('intval', explode(',', $tagParam)));
-                if ($ids) {
-                    $select->where('table.metas.type = ?', 'tag')
-                        ->where('table.metas.mid IN ?', $ids);
-                }
-            }
+            $select->group('table.contents.cid');
         }
 
+        // orderby/order for posts/pages
+        $orderby = strtolower(trim((string)$this->request->get('orderby', 'date')));
+        $order = strtolower(trim((string)$this->request->get('order', 'desc')));
+        $orderCol = 'table.contents.created';
+        if ($orderby === 'modified') $orderCol = 'table.contents.modified';
+        else if ($orderby === 'title') $orderCol = 'table.contents.title';
+        else if ($orderby === 'id') $orderCol = 'table.contents.cid';
+        $orderDir = ($order === 'asc') ? Typecho_Db::SORT_ASC : Typecho_Db::SORT_DESC;
+        $select->order($orderCol, $orderDir);
+
         $rows = $this->db->fetchAll($select);
-        // total count (rough, without filters apart from search/tax for simplicity)
-        $countSelect = $this->db->select(['COUNT(1)' => 'cnt'])->from('table.contents')
-            ->where('type = ?', $type)
-            ->where('status = ?', 'publish')
-            ->where('created <= ?', time());
+        // total count (respect filters, avoid duplicates via DISTINCT)
+        $countSelect = $this->db->select(['COUNT(DISTINCT table.contents.cid)' => 'cnt'])->from('table.contents')
+            ->where('table.contents.type = ?', $type)
+            ->where('table.contents.status = ?', 'publish')
+            ->where('table.contents.created <= ?', time());
         if ($search !== '') {
             $kw = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
             $countSelect->where("(title LIKE ? OR text LIKE ?)", $kw, $kw);
         }
         if ($slug !== '') {
-            $countSelect->where('slug = ?', $slug);
+            $countSelect->where('table.contents.slug = ?', $slug);
         }
-        if ($catParam !== '' || $tagParam !== '') {
+        if ($needsTermJoin) {
             $countSelect->join('table.relationships', 'table.relationships.cid = table.contents.cid')
                 ->join('table.metas', 'table.metas.mid = table.relationships.mid');
-            if ($catParam !== '') {
-                $ids = array_filter(array_map('intval', explode(',', $catParam)));
-                if ($ids) {
-                    $countSelect->where('table.metas.type = ?', 'category')
-                        ->where('table.metas.mid IN ?', $ids);
-                }
+            $parts = [];
+            $binds = [];
+            if (!empty($catIds)) {
+                $in = implode(',', array_map('intval', $catIds));
+                $parts[] = "(table.metas.type = 'category' AND table.metas.mid IN ($in))";
             }
-            if ($tagParam !== '') {
-                $ids = array_filter(array_map('intval', explode(',', $tagParam)));
-                if ($ids) {
-                    $countSelect->where('table.metas.type = ?', 'tag')
-                        ->where('table.metas.mid IN ?', $ids);
+            if (!empty($tagIds)) {
+                $in = implode(',', array_map('intval', $tagIds));
+                $parts[] = "(table.metas.type = 'tag' AND table.metas.mid IN ($in))";
+            }
+            if ($tagSlug !== '') {
+                $parts[] = "(table.metas.type = 'tag' AND table.metas.slug = ?)";
+                $binds[] = $tagSlug;
+            }
+            if (!empty($parts)) {
+                $expr = '(' . implode(' OR ', $parts) . ')';
+                if (!empty($binds)) {
+                    $countSelect->where($expr, ...$binds);
+                } else {
+                    $countSelect->where($expr);
                 }
             }
         }
@@ -569,6 +628,71 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
     public function pages() { $this->list_contents('page'); }
     public function page() { $this->get_content_item((int)$this->request->get('cid'), 'page'); }
 
+    public function post_by_slug()
+    {
+        $slug = $this->request->get('slug');
+        $row = $this->db->fetchRow($this->db->select()->from('table.contents')
+            ->where('type = ?', 'post')
+            ->where('slug = ?', $slug)
+            ->limit(1));
+        if (!$row || $row['status'] !== 'publish') {
+            $this->json(['code' => 'not_found', 'message' => 'Not found'], 404);
+        }
+        $this->json($this->build_post_row($row));
+    }
+
+    public function page_by_slug()
+    {
+        $slug = $this->request->get('slug');
+        $row = $this->db->fetchRow($this->db->select()->from('table.contents')
+            ->where('type = ?', 'page')
+            ->where('slug = ?', $slug)
+            ->limit(1));
+        if (!$row || $row['status'] !== 'publish') {
+            $this->json(['code' => 'not_found', 'message' => 'Not found'], 404);
+        }
+        $this->json($this->build_post_row($row));
+    }
+
+    public function posts_by_tag()
+    {
+        $slug = $this->request->get('slug');
+        list($page, $per, $offset) = $this->get_pagination();
+        $select = $this->db->select()->from('table.contents')
+            ->where('type = ?', 'post')
+            ->where('status = ?', 'publish')
+            ->where('created <= ?', time())
+            ->join('table.relationships', 'table.relationships.cid = table.contents.cid')
+            ->join('table.metas', 'table.metas.mid = table.relationships.mid')
+            ->where('table.metas.type = ?', 'tag')
+            ->where('table.metas.slug = ?', $slug)
+            ->order('created', Typecho_Db::SORT_DESC)
+            ->limit($per, $offset);
+
+        $rows = $this->db->fetchAll($select);
+
+        $count = $this->db->fetchObject(
+            $this->db->select(['COUNT(1)' => 'cnt'])->from('table.contents')
+                ->where('type = ?', 'post')
+                ->where('status = ?', 'publish')
+                ->where('created <= ?', time())
+                ->join('table.relationships', 'table.relationships.cid = table.contents.cid')
+                ->join('table.metas', 'table.metas.mid = table.relationships.mid')
+                ->where('table.metas.type = ?', 'tag')
+                ->where('table.metas.slug = ?', $slug)
+        )->cnt;
+
+        $items = [];
+        foreach ($rows as $row) {
+            $items[] = $this->build_post_row($row);
+        }
+
+        header('X-WP-Total: ' . (int)$count);
+        header('X-WP-TotalPages: ' . (int)ceil($count / $per));
+        header('Access-Control-Expose-Headers: X-WP-Total, X-WP-TotalPages');
+        $this->json($items);
+    }
+
     private function build_term_row($row, $taxonomy)
     {
         return [
@@ -587,16 +711,115 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
     private function list_terms($taxonomy)
     {
         list($page, $per, $offset) = $this->get_pagination();
-        $rows = $this->db->fetchAll(
-            $this->db->select()->from('table.metas')
-                ->where('type = ?', $taxonomy)
-                ->order('mid', Typecho_Db::SORT_ASC)
-                ->limit($per, $offset)
-        );
-        $count = $this->db->fetchObject(
-            $this->db->select(['COUNT(1)' => 'cnt'])->from('table.metas')
-                ->where('type = ?', $taxonomy)
-        )->cnt;
+
+        $select = $this->db->select()->from('table.metas')
+            ->where('table.metas.type = ?', $taxonomy)
+            ->limit($per, $offset);
+
+        // search by name/slug/description
+        $search = trim((string)$this->request->get('search', ''));
+        if ($search !== '') {
+            $kw = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+            $select->where('(table.metas.name LIKE ? OR table.metas.slug LIKE ? OR table.metas.description LIKE ?)', $kw, $kw, $kw);
+        }
+
+        // include / exclude by term ids
+        $includeParam = trim((string)$this->request->get('include', ''));
+        $excludeParam = trim((string)$this->request->get('exclude', ''));
+        $includeIds = $includeParam !== '' ? array_filter(array_map('intval', explode(',', $includeParam))) : [];
+        $excludeIds = $excludeParam !== '' ? array_filter(array_map('intval', explode(',', $excludeParam))) : [];
+        if (!empty($includeIds)) {
+            $in = implode(',', array_map('intval', $includeIds));
+            $select->where("table.metas.mid IN ($in)");
+        }
+        if (!empty($excludeIds)) {
+            $in = implode(',', array_map('intval', $excludeIds));
+            $select->where("table.metas.mid NOT IN ($in)");
+        }
+
+        // slug filter (comma separated)
+        $slugs = [];
+        $slugParam = trim((string)$this->request->get('slug', ''));
+        if ($slugParam !== '') {
+            $slugs = array_filter(array_map('trim', explode(',', $slugParam)));
+            if (!empty($slugs)) {
+                $ph = implode(',', array_fill(0, count($slugs), '?'));
+                $select->where('table.metas.slug IN (' . $ph . ')', ...$slugs);
+            }
+        }
+
+        // hide_empty
+        $hideEmpty = $this->request->get('hide_empty');
+        if ($hideEmpty === '1' || $hideEmpty === 'true' || $hideEmpty === 1) {
+            $select->where('table.metas.count > 0');
+        }
+
+        // filter terms attached to a specific post id
+        $postId = (int)$this->request->get('post', 0);
+        if ($postId > 0) {
+            $select->join('table.relationships', 'table.relationships.mid = table.metas.mid')
+                   ->where('table.relationships.cid = ?', $postId)
+                   ->group('table.metas.mid');
+        }
+
+        // orderby/order
+        $orderby = strtolower(trim((string)$this->request->get('orderby', 'name')));
+        $order = strtolower(trim((string)$this->request->get('order', 'asc')));
+        $orderDir = ($order === 'desc') ? Typecho_Db::SORT_DESC : Typecho_Db::SORT_ASC;
+
+        if ($orderby === 'id') {
+            $select->order('table.metas.mid', $orderDir);
+        } else if ($orderby === 'slug') {
+            $select->order('table.metas.slug', $orderDir);
+        } else if ($orderby === 'count') {
+            $select->order('table.metas.count', $orderDir);
+        } else if ($orderby === 'description') {
+            $select->order('table.metas.description', $orderDir);
+        } else if ($orderby === 'include' && !empty($includeIds)) {
+            // We'll sort in PHP after fetch to respect include order
+        } else {
+            $select->order('table.metas.name', $orderDir);
+        }
+
+        $rows = $this->db->fetchAll($select);
+
+        // sort by include order if requested
+        if ($orderby === 'include' && !empty($includeIds)) {
+            $orderMap = array_flip($includeIds);
+            usort($rows, function($a, $b) use ($orderMap) {
+                $ia = isset($orderMap[$a['mid']]) ? $orderMap[$a['mid']] : PHP_INT_MAX;
+                $ib = isset($orderMap[$b['mid']]) ? $orderMap[$b['mid']] : PHP_INT_MAX;
+                return $ia <=> $ib;
+            });
+        }
+
+        // count with same filters
+        $countSelect = $this->db->select(['COUNT(DISTINCT table.metas.mid)' => 'cnt'])->from('table.metas')
+            ->where('table.metas.type = ?', $taxonomy);
+        if ($search !== '') {
+            $kw = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+            $countSelect->where('(table.metas.name LIKE ? OR table.metas.slug LIKE ? OR table.metas.description LIKE ?)', $kw, $kw, $kw);
+        }
+        if (!empty($includeIds)) {
+            $in = implode(',', array_map('intval', $includeIds));
+            $countSelect->where("table.metas.mid IN ($in)");
+        }
+        if (!empty($excludeIds)) {
+            $in = implode(',', array_map('intval', $excludeIds));
+            $countSelect->where("table.metas.mid NOT IN ($in)");
+        }
+        if (!empty($slugs)) {
+            $ph = implode(',', array_fill(0, count($slugs), '?'));
+            $countSelect->where('table.metas.slug IN (' . $ph . ')', ...$slugs);
+        }
+        if ($hideEmpty === '1' || $hideEmpty === 'true' || $hideEmpty === 1) {
+            $countSelect->where('table.metas.count > 0');
+        }
+        if ($postId > 0) {
+            $countSelect->join('table.relationships', 'table.relationships.mid = table.metas.mid')
+                        ->where('table.relationships.cid = ?', $postId);
+        }
+        $count = $this->db->fetchObject($countSelect)->cnt;
 
         $items = [];
         foreach ($rows as $row) {
