@@ -3,7 +3,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
 
 /**
  * WordPress-compatible REST API for Typecho
- * @version 1.0.1
+ * @version 1.0.3
  * @author jkjoy
  * @link https://www.imsun.org
  * @package RestAPI
@@ -87,6 +87,12 @@ class RestAPI_Plugin implements Typecho_Plugin_Interface
         Helper::addRoute('restapi_links_slash', '/wp-json/wp/v2/links/', 'RestAPI_Action', 'links');
         Helper::addRoute('restapi_links_slash_index', '/index.php/wp-json/wp/v2/links/', 'RestAPI_Action', 'links');
 
+        // Link Categories
+        Helper::addRoute('restapi_link_categories', '/wp-json/wp/v2/link-categories', 'RestAPI_Action', 'linkCategories');
+        Helper::addRoute('restapi_link_categories_index', '/index.php/wp-json/wp/v2/link-categories', 'RestAPI_Action', 'linkCategories');
+        Helper::addRoute('restapi_link_categories_slash', '/wp-json/wp/v2/link-categories/', 'RestAPI_Action', 'linkCategories');
+        Helper::addRoute('restapi_link_categories_slash_index', '/index.php/wp-json/wp/v2/link-categories/', 'RestAPI_Action', 'linkCategories');
+
         // Comments (GET list, POST create)
         Helper::addRoute('restapi_comments', '/wp-json/wp/v2/comments', 'RestAPI_Action', 'comments');
         Helper::addRoute('restapi_comments_index', '/index.php/wp-json/wp/v2/comments', 'RestAPI_Action', 'comments');
@@ -138,15 +144,23 @@ class RestAPI_Plugin implements Typecho_Plugin_Interface
     }
 
     public static function config(Typecho_Widget_Helper_Form $form) {
+        $siteTitle = new Typecho_Widget_Helper_Form_Element_Text(
+            'site_title', NULL, '', _t('网站标题'), _t('用于 REST API 返回的网站标题，留空则使用系统默认标题')
+        );
+        $siteDescription = new Typecho_Widget_Helper_Form_Element_Textarea(
+            'site_description', NULL, '', _t('网站描述'), _t('用于 REST API 返回的网站描述，留空则使用系统默认描述')
+        );
         $header = new Typecho_Widget_Helper_Form_Element_Textarea(
-            'header_code', NULL, '', _t('头部代码'), _t('输出在页面<head>或顶部区域的自定义代码')
+            'head_html', NULL, '', _t('头部HTML代码'), _t('输出在页面<head>或顶部区域的自定义代码')
         );
         $footer = new Typecho_Widget_Helper_Form_Element_Textarea(
-            'footer_code', NULL, '', _t('页脚代码'), _t('输出在页面底部区域的自定义代码')
+            'site_footer_text', NULL, '', _t('页脚文本'), _t('输出在页面底部区域的自定义代码')
         );
         $icp = new Typecho_Widget_Helper_Form_Element_Text(
-            'icp', NULL, '', _t('备案号'), _t('网站备案号')
+            'site_icp', NULL, '', _t('备案号'), _t('网站备案号')
         );
+        $form->addInput($siteTitle);
+        $form->addInput($siteDescription);
         $form->addInput($header);
         $form->addInput($footer);
         $form->addInput($icp);

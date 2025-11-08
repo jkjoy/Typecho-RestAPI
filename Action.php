@@ -46,10 +46,19 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
 
     public function root()
     {
+        // read plugin config from RestAPI
+        $cfg = Typecho_Widget::widget('Widget_Options')->plugin('RestAPI');
+        $title = isset($cfg->site_title) && trim((string)$cfg->site_title) !== ''
+            ? trim((string)$cfg->site_title)
+            : $this->options->title;
+        $description = isset($cfg->site_description) && trim((string)$cfg->site_description) !== ''
+            ? trim((string)$cfg->site_description)
+            : $this->options->description;
+
         $base = rtrim($this->options->siteUrl, '/');
         $this->json([
-            'name' => $this->options->title,
-            'description' => $this->options->description,
+            'name' => $title,
+            'description' => $description,
             'url' => $base,
             'home' => $base,
             'namespaces' => ['wp/v2'],
@@ -59,6 +68,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
                 '/wp/v2/pages' => ['namespace' => 'wp/v2', 'methods' => ['GET']],
                 '/wp/v2/categories' => ['namespace' => 'wp/v2', 'methods' => ['GET']],
                 '/wp/v2/tags' => ['namespace' => 'wp/v2', 'methods' => ['GET']],
+                '/wp/v2/link-categories' => ['namespace' => 'wp/v2', 'methods' => ['GET']],
             ],
         ]);
     }
@@ -78,6 +88,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
                 '/wp/v2/tags' => ['methods' => ['GET']],
                 '/wp/v2/settings' => ['methods' => ['GET']],
                 '/wp/v2/links' => ['methods' => ['GET']],
+                '/wp/v2/link-categories' => ['methods' => ['GET']],
                 '/wp/v2/comments' => ['methods' => ['GET','POST']],
                 '/wp/v2/users' => ['methods' => ['GET']],
                 '/wp/v2/users/(?P<id>[\\d]+)' => ['methods' => ['GET']],
@@ -92,17 +103,23 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
     {
         // read plugin config from RestAPI
         $cfg = Typecho_Widget::widget('Widget_Options')->plugin('RestAPI');
-        $header = isset($cfg->header_code) ? (string)$cfg->header_code : '';
-        $footer = isset($cfg->footer_code) ? (string)$cfg->footer_code : '';
-        $icp = isset($cfg->icp) ? (string)$cfg->icp : '';
+        $title = isset($cfg->site_title) && trim((string)$cfg->site_title) !== ''
+            ? trim((string)$cfg->site_title)
+            : $this->options->title;
+        $description = isset($cfg->site_description) && trim((string)$cfg->site_description) !== ''
+            ? trim((string)$cfg->site_description)
+            : $this->options->description;
+        $headHtml = isset($cfg->head_html) ? (string)$cfg->head_html : '';
+        $footerText = isset($cfg->site_footer_text) ? (string)$cfg->site_footer_text : '';
+        $icp = isset($cfg->site_icp) ? (string)$cfg->site_icp : '';
 
         $this->json([
-            'title' => $this->options->title,
-            'description' => $this->options->description,
+            'site_title' => $title,
+            'site_description' => $description,
             'siteurl' => rtrim($this->options->siteUrl, '/'),
-            'restapi_header_code' => $header,
-            'restapi_footer_code' => $footer,
-            'restapi_icp' => $icp,
+            'head_html' => $headHtml,
+            'site_footer_text' => $footerText,
+            'site_icp' => $icp,
         ]);
     }
 
@@ -110,6 +127,8 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
     {
         $db = $this->db;
         $prefix = $db->getPrefix();
+        $baseUrl = rtrim($this->options->siteUrl, '/');
+
         // Check existence of links table
         try {
             $select = $db->select()
@@ -125,7 +144,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
                 $select->where('state = ?', (int)$state);
             }
             list($page, $per, $offset) = $this->get_pagination();
-            $select->limit($per, $offset);
+            $select->limit($per)->offset($offset);
 
             $rows = $db->fetchAll($select);
             $count = $db->fetchObject(
@@ -134,17 +153,32 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
 
             $items = [];
             foreach ($rows as $r) {
+                $linkId = (int)$r['lid'];
                 $items[] = [
-                    'id' => (int)$r['lid'],
+                    'id' => $linkId,
                     'name' => $r['name'],
                     'url' => $r['url'],
-                    'sort' => $r['sort'],
-                    'email' => $r['email'],
-                    'avatar' => $r['image'],
-                    'description' => $r['description'],
-                    'user' => $r['user'],
-                    'state' => isset($r['state']) ? (int)$r['state'] : 1,
-                    'order' => isset($r['order']) ? (int)$r['order'] : 0,
+                    'description' => isset($r['description']) ? $r['description'] : '',
+                    'avatar' => isset($r['image']) ? $r['image'] : '',
+                    'category' => [
+                        'id' => 1,
+                        'name' => '友情链接',
+                        'slug' => 'friends',
+                    ],
+                    'target' => '_blank',
+                    'visible' => isset($r['state']) && (int)$r['state'] === 1 ? 'yes' : 'no',
+                    'rating' => 0,
+                    'sort_order' => isset($r['order']) ? (int)$r['order'] : 0,
+                    'created_at' => date('c', time()),
+                    'updated_at' => date('c', time()),
+                    '_links' => [
+                        'self' => [
+                            ['href' => $baseUrl . '/wp-json/wp/v2/links/' . $linkId]
+                        ],
+                        'collection' => [
+                            ['href' => $baseUrl . '/wp-json/wp/v2/links']
+                        ]
+                    ]
                 ];
             }
 
@@ -158,30 +192,83 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
         }
     }
 
+    public function linkCategories()
+    {
+        $this->json([
+            [
+                'id' => 1,
+                'name' => '默认分类',
+                'slug' => 'friends',
+                'description' => '排名不分先后',
+                'count' => 1,
+            ]
+        ]);
+    }
+
     private function build_comment_row($row)
     {
         $content = $row['text'];
+        $baseUrl = rtrim($this->options->siteUrl, '/');
+        $commentId = (int)$row['coid'];
+        $postId = (int)$row['cid'];
+
         // resolve post/page link
         $post = $this->db->fetchRow(
-            $this->db->select()->from('table.contents')->where('cid = ?', $row['cid'])->limit(1)
+            $this->db->select()->from('table.contents')->where('cid = ?', $postId)->limit(1)
         );
         $permalink = $post ? Typecho_Router::url($post['type'] === 'page' ? 'page' : 'post', $post, $this->options->siteUrl) : '';
 
-        return [
-            'id' => (int)$row['coid'],
-            'post' => (int)$row['cid'],
+        // Generate gravatar URLs
+        $email = isset($row['mail']) ? $row['mail'] : '';
+        $hash = md5(strtolower(trim($email)));
+        $gravatarBase = 'https://www.gravatar.com/avatar/' . $hash;
+
+        // Map status: Typecho uses 'approved', 'waiting', 'spam'
+        // WordPress uses 'approved', 'hold', 'spam'
+        $statusMap = [
+            'approved' => 'approved',
+            'waiting' => 'hold',
+            'spam' => 'spam'
+        ];
+        $status = isset($statusMap[$row['status']]) ? $statusMap[$row['status']] : $row['status'];
+
+        $result = [
+            'id' => $commentId,
+            'post' => $postId,
             'parent' => (int)$row['parent'],
+            'author' => isset($row['authorId']) ? (int)$row['authorId'] : 0,
             'author_name' => $row['author'],
-            'author_email' => $row['mail'],
-            'author_url' => $row['url'],
+            'author_url' => isset($row['url']) ? $row['url'] : '',
             'date' => date('c', $row['created']),
             'date_gmt' => gmdate('c', $row['created']),
             'content' => ['rendered' => $content],
-            'link' => $permalink ? ($permalink . '#comment-' . (int)$row['coid']) : '',
+            'link' => $permalink ? ($permalink . '#comment-' . $commentId) : '',
+            'status' => $status,
             'type' => 'comment',
-            'status' => $row['status'],
-            'meta' => (object)[],
+            'author_avatar_urls' => [
+                '24' => $gravatarBase . '?s=24&d=mm&r=g',
+                '48' => $gravatarBase . '?s=48&d=mm&r=g',
+                '96' => $gravatarBase . '?s=96&d=mm&r=g',
+            ],
+            'meta' => [],
+            '_links' => [
+                'self' => [
+                    ['href' => $baseUrl . '/wp-json/wp/v2/comments/' . $commentId]
+                ],
+                'collection' => [
+                    ['href' => $baseUrl . '/wp-json/wp/v2/comments']
+                ],
+                'up' => [
+                    [
+                        'embeddable' => true,
+                        'post_type' => $post && $post['type'] === 'page' ? 'page' : 'post',
+                        'href' => $baseUrl . '/wp-json/wp/v2/posts/' . $postId
+                    ]
+                ]
+            ]
         ];
+
+        return $result;
     }
 
     public function comments()
@@ -192,7 +279,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
 
         list($page, $per, $offset) = $this->get_pagination();
         $select = $this->db->select()->from('table.comments')
-            ->limit($per, $offset);
+            ->limit($per)->offset($offset);
 
         // status filter (WP: approve/hold/spam/any)
         $statusParam = strtolower(trim((string)$this->request->get('status', 'approved')));
@@ -246,23 +333,53 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
 
     private function create_comment()
     {
-        // Expected fields per WP: post, author_name, author_email, author_url, content, parent
-        $postId = (int)$this->request->get('post');
-        $content = trim((string)$this->request->get('content'));
-        $author = trim((string)$this->request->get('author_name'));
-        $email = trim((string)$this->request->get('author_email'));
-        $url = trim((string)$this->request->get('author_url'));
-        $parent = (int)$this->request->get('parent', 0);
+        // Read JSON body if present
+        $body = file_get_contents('php://input');
+        $json = json_decode($body, true);
 
-        if ($postId <= 0 || $content === '' || $author === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $this->json(['code' => 'invalid', 'message' => 'Invalid parameters'], 400);
+        // Helper function to get parameter from JSON or query string
+        $getParam = function($key, $default = '') use ($json) {
+            if (is_array($json) && isset($json[$key])) {
+                return $json[$key];
+            }
+            return $this->request->get($key, $default);
+        };
+
+        // Expected fields per WP: post, author_name, author_email, author_url, content, parent
+        $postId = (int)$getParam('post', 0);
+
+        // Handle content parameter (string or object with 'rendered' key)
+        $contentParam = $getParam('content', '');
+        if (is_array($contentParam) && isset($contentParam['rendered'])) {
+            $content = trim((string)$contentParam['rendered']);
+        } else {
+            $content = trim((string)$contentParam);
+        }
+
+        $author = trim((string)$getParam('author_name', ''));
+        $email = trim((string)$getParam('author_email', ''));
+        $url = trim((string)$getParam('author_url', ''));
+        $parent = (int)$getParam('parent', 0);
+
+        // Validation with detailed error messages
+        if ($postId <= 0) {
+            $this->json(['code' => 'rest_comment_invalid_post_id', 'message' => 'Invalid post ID.'], 400);
+        }
+        if ($content === '') {
+            $this->json(['code' => 'rest_comment_content_invalid', 'message' => 'Comment content cannot be empty.'], 400);
+        }
+        if ($author === '') {
+            $this->json(['code' => 'rest_comment_author_invalid', 'message' => 'Comment author name is required.'], 400);
+        }
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->json(['code' => 'rest_comment_author_email_invalid', 'message' => 'A valid email address is required.'], 400);
         }
 
         // Verify post exists and is open to comments
         $post = $this->db->fetchRow($this->db->select()->from('table.contents')
             ->where('cid = ?', $postId)->limit(1));
         if (!$post || $post['status'] !== 'publish') {
-            $this->json(['code' => 'not_found', 'message' => 'Post not found'], 404);
+            $this->json(['code' => 'rest_comment_invalid_post_id', 'message' => 'Post not found or not published.'], 404);
         }
 
         // Insert comment (hold for moderation by default consistent with Typecho settings)
@@ -305,7 +422,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
         list($page, $per, $offset) = $this->get_pagination();
         $select = $this->db->select()->from('table.users')
             ->order('uid', Typecho_Db::SORT_ASC)
-            ->limit($per, $offset);
+            ->limit($per)->offset($offset);
 
         $search = trim((string)$this->request->get('search', ''));
         if ($search !== '') {
@@ -474,9 +591,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
         $select = $this->db->select('table.contents.*')->from('table.contents')
             ->where('table.contents.type = ?', $type)
             ->where('table.contents.status = ?', 'publish')
-            ->where('table.contents.created <= ?', time())
-            ->order('table.contents.created', Typecho_Db::SORT_DESC)
-            ->limit($per, $offset);
+            ->where('table.contents.created <= ?', time());
         // search
         $search = trim((string)$this->request->get('search', ''));
         if ($search !== '') {
@@ -558,6 +673,9 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
         else if ($orderby === 'id') $orderCol = 'table.contents.cid';
         $orderDir = ($order === 'asc') ? Typecho_Db::SORT_ASC : Typecho_Db::SORT_DESC;
         $select->order($orderCol, $orderDir);
+
+        // Apply pagination limit after all filters and ordering
+        $select->limit($per)->offset($offset);
 
         $rows = $this->db->fetchAll($select);
         // total count (respect filters, avoid duplicates via DISTINCT)
@@ -667,7 +785,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
             ->where('table.metas.type = ?', 'tag')
             ->where('table.metas.slug = ?', $slug)
             ->order('created', Typecho_Db::SORT_DESC)
-            ->limit($per, $offset);
+            ->limit($per)->offset($offset);
 
         $rows = $this->db->fetchAll($select);
 
@@ -714,7 +832,7 @@ class RestAPI_Action extends Typecho_Widget implements Widget_Interface_Do
 
         $select = $this->db->select()->from('table.metas')
             ->where('table.metas.type = ?', $taxonomy)
-            ->limit($per, $offset);
+            ->limit($per)->offset($offset);
 
         // search by name/slug/description
         $search = trim((string)$this->request->get('search', ''));
